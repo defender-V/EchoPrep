@@ -14,7 +14,6 @@ if not os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") == "your_api_k
     st.stop()
 
 # Initialize Backend Service
-@st.cache_resource
 def get_service():
     return InterviewLLMService()
 

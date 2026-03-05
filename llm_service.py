@@ -10,7 +10,7 @@ class InterviewLLMService:
             raise ValueError("Google API key is missing or invalid. Please update your .env file.")
         
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash", 
+            model="gemini-flash-latest", 
             temperature=0.7,
             google_api_key=api_key
         )
@@ -19,15 +19,36 @@ class InterviewLLMService:
         """Extracts core requirements from a JD."""
         chain =  JD_PARSING_PROMPT | self.llm
         response = chain.invoke({"jd_text": jd_text})
-        return response.content.strip()
+        content = response.content
+        if isinstance(content, list):
+            # Extract just the text portion from the parts dictionary
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+                else:
+                    text_parts.append(str(item))
+            content = " ".join(text_parts)
+        return content.strip()
 
     def generate_interview_plan(self, parsed_jd: str) -> list[str]:
         """Generates a list of interview questions based on parsed requirements."""
         chain = QUESTION_GENERATION_PROMPT | self.llm
         response = chain.invoke({"parsed_jd": parsed_jd})
         
+        content = response.content
+        if isinstance(content, list):
+            # Extract just the text portion from the parts dictionary
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+                else:
+                    text_parts.append(str(item))
+            content = " ".join(text_parts)
+            
         # Parse the output separated by "---"
-        raw_text = response.content.strip()
+        raw_text = content.strip()
         questions = []
         for block in raw_text.split("---"):
             block = block.strip()
@@ -47,4 +68,16 @@ class InterviewLLMService:
         """Evaluates a candidate's answer and returns a score/feedback."""
         chain = EVALUATION_PROMPT | self.llm
         response = chain.invoke({"question": question, "answer": answer})
-        return response.content.strip()
+        
+        content = response.content
+        if isinstance(content, list):
+            # Extract just the text portion from the parts dictionary
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+                else:
+                    text_parts.append(str(item))
+            content = " ".join(text_parts)
+            
+        return content.strip()
