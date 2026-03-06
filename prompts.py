@@ -17,10 +17,15 @@ JD_PARSING_PROMPT = PromptTemplate(
 
 # Prompt for generating the interview plan/questions
 QUESTION_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["parsed_jd"],
+    input_variables=["parsed_jd", "num_questions", "interview_type"],
     template="""
     Based on the following core requirements and skills extracted from a job description, 
-    generate a tailored 3-question interview plan. The questions should be a mix of technical and behavioral.
+    generate a tailored {num_questions}-question interview plan.
+    
+    Interview focus: {interview_type}
+    - If "technical": Focus on technical skills, problem-solving, and domain knowledge.
+    - If "behavioral": Focus on past experiences, teamwork, leadership, and soft skills.
+    - If "mixed": Combine both technical and behavioral questions.
 
     Core Requirements/Skills:
     {parsed_jd}
@@ -30,7 +35,7 @@ QUESTION_GENERATION_PROMPT = PromptTemplate(
     ---
     Question 2: [Your second question here]
     ---
-    Question 3: [Your third question here]
+    ... (continue for all {num_questions} questions)
     """
 )
 

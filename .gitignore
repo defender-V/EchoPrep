@@ -1,2 +1,8 @@
 __pycache__/
 venv/
+.venv/
+myenv/
+.env
+.streamlit/
+.pytest_cache/
+*.log
