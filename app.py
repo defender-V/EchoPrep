@@ -1,7 +1,10 @@
 import streamlit as st
 import os
+import time
 from dotenv import load_dotenv
 from llm_service import InterviewLLMService
+from voice_service import VoiceService
+from streamlit_mic_recorder import mic_recorder
 
 # Load Env Vars
 load_dotenv()
@@ -18,6 +21,7 @@ def get_service():
     return InterviewLLMService()
 
 llm_service = get_service()
+voice_service = VoiceService()
 
 # --- Initializing Session State ---
 if "messages" not in st.session_state:
@@ -52,7 +56,16 @@ with st.sidebar:
             # Formulate first prompt
             st.session_state.messages = []
             first_q = st.session_state.questions[0]
-            st.session_state.messages.append({"role": "assistant", "content": f"Welcome! Let's begin the interview.\n\n**Question 1:** {first_q}"})
+            first_q_txt = f"Welcome! Let's begin the interview.\n\n**Question 1:** {first_q}"
+            
+            # Generate the audio for the very first question upon starting
+            audio_fp = voice_service.generate_audio_for_text(first_q_txt)
+            
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": first_q_txt,
+                "audio": audio_fp
+            })
 
 
 # --- Main App Interface ---
@@ -61,13 +74,44 @@ st.title("AI-Driven Interview Simulator")
 if not st.session_state.interview_active:
     st.info("👈 Please enter a Job Description in the sidebar to start the interview.")
 else:
-    # 1. Display chat history
+    # 1. Display chat history FIRST (so it sits above the input)
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if "audio" in msg and msg["audio"] is not None:
+                # Replay audio if it exists in history
+                st.audio(msg["audio"], format="audio/mpeg", autoplay=False)
     
     # 2. Accept User Input Let's take the candidate's answer
-    candidate_answer = st.chat_input("Type your answer here...")
+    
+    # We provide a fallback text input just in case, but emphasize the mic
+    st.info("⏱️ **Time Limit:** Please keep your spoken answers under 60 seconds.")
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.write("🎙️ **Speak Answer:**")
+        # The recorder returns a dictionary with 'bytes' when recording stops
+        audio_dict = mic_recorder(
+            start_prompt="Record",
+            stop_prompt="Stop",
+            key=f"mic_recorder_{st.session_state.current_q_index}", # Give it a unique key per question so it resets
+            format="wav",
+            use_container_width=True
+        )
+    with col2:
+        text_fallback = st.chat_input("Or type your answer here...")
+
+    candidate_answer = None
+
+    # Determine if we got text from the fallback or audio from the mic
+    if text_fallback:
+        candidate_answer = text_fallback
+    elif audio_dict and "bytes" in audio_dict:
+        with st.spinner("Transcribing your audio..."):
+            transcribed_text = voice_service.transcribe_audio_buffer(audio_dict["bytes"])
+            if transcribed_text and not transcribed_text.startswith("Error"):
+                candidate_answer = transcribed_text
+            else:
+                st.error("Could not hear or transcribe you clearly. Please try typing or recording again.")
     
     if candidate_answer:
         # Show candidate's answer
@@ -94,15 +138,30 @@ else:
                 # Ask the next question
                 next_q = st.session_state.questions[st.session_state.current_q_index]
                 q_text = f"**Question {st.session_state.current_q_index + 1}:** {next_q}"
-                st.session_state.messages.append({"role": "assistant", "content": q_text})
+                
+                # Generate audio for the next question
+                audio_fp = voice_service.generate_audio_for_text(next_q)
+                
+                # We store both text and the TTS buffer in state
+                st.session_state.messages.append({"role": "assistant", "content": q_text, "audio": audio_fp})
+                
                 with st.chat_message("assistant"):
                     st.markdown(q_text)
+                    st.audio(audio_fp, format="audio/mpeg", autoplay=True)
             else:
                 # Interview is over
                 st.session_state.interview_active = False
-                st.session_state.messages.append({"role": "assistant", "content": "Thank you! The interview is now complete. Generating your evaluation report..."})
+                end_msg = "Thank you! The interview is now complete. Generating your evaluation report..."
+                audio_fp = voice_service.generate_audio_for_text(end_msg)
+                
+                st.session_state.messages.append({"role": "assistant", "content": end_msg, "audio": audio_fp})
+                
                 with st.chat_message("assistant"):
-                    st.markdown("Thank you! The interview is now complete. Generating your evaluation report...")
+                    st.markdown(end_msg)
+                    st.audio(audio_fp, format="audio/mpeg", autoplay=True)
+                
+                # Sleep briefly so the user can hear the TTS finish playing before the screen refreshes to the results
+                time.sleep(4)
                 st.rerun() # Refresh to show results
 
 # --- Results View ---
