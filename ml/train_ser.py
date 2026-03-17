@@ -9,8 +9,8 @@ from ml.ser_model import EmotionCNN2D
 # Hyperparameters
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-EPOCHS = 30
-DATA_DIR = r"C:\Users\navod\Desktop\RAVDESS"
+EPOCHS = 100
+DATA_DIR = r"/home/navodit/my_work/RAVDESS"
 MODEL_SAVE_DIR = r"ml\models"
 
 def train():

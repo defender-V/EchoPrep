@@ -1,4 +1,4 @@
-.PHONY: setup run clean help
+.PHONY: setup run test-voice clean help
 
 VENV_DIR = venv
 REQUIREMENTS = requirements.txt
@@ -7,9 +7,10 @@ MAIN_APP = app.py
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make setup    - Create a virtual environment and install dependencies"
-	@echo "  make run      - Run the Streamlit application (calls setup first if needed)"
-	@echo "  make clean    - Remove the virtual environment and cached files"
+	@echo "  make setup      - Create a virtual environment and install dependencies"
+	@echo "  make run        - Run the Streamlit application (calls setup first if needed)"
+	@echo "  make test-voice - Run the standalone test_voice.py application"
+	@echo "  make clean      - Remove the virtual environment and cached files"
 
 # Create virtual environment and install dependencies
 setup: $(VENV_DIR)/touchfile
@@ -39,6 +40,15 @@ run: setup
 		$(VENV_DIR)/Scripts/streamlit run $(MAIN_APP); \
 	else \
 		$(VENV_DIR)/bin/streamlit run $(MAIN_APP); \
+	fi
+
+# Run the standalone voice tester
+test-voice: setup
+	@echo "Starting Vibe Check Tester..."
+	@if [ -d "$(VENV_DIR)/Scripts" ]; then \
+		$(VENV_DIR)/Scripts/streamlit run test_voice.py; \
+	else \
+		$(VENV_DIR)/bin/streamlit run test_voice.py; \
 	fi
 
 # Clean up environment
