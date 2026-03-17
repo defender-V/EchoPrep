@@ -103,11 +103,15 @@ class InterviewLLMService:
             
         return questions
 
-    def evaluate_answer(self, question: str, answer: str) -> str:
+    def evaluate_answer(self, question: str, answer: str, vibe_metrics: str = "N/A (Text input only)") -> str:
         """Evaluates a candidate's answer and returns a score/feedback."""
         chain = EVALUATION_PROMPT | self.llm
         try:
-            response = self._invoke_with_retry(chain, {"question": question, "answer": answer})
+            response = self._invoke_with_retry(chain, {
+                "question": question, 
+                "answer": answer,
+                "vibe_metrics": vibe_metrics
+            })
             return self._content_to_str(response.content)
         except Exception as e:
             msg = str(e)

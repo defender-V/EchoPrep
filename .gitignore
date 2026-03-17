@@ -6,3 +6,8 @@ myenv/
 .streamlit/
 .pytest_cache/
 *.log
+FER-2013/
+RAVDESS/
+
+# ML Models & Weights
+*.pth

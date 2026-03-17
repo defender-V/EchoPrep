@@ -5,6 +5,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from llm_service import InterviewLLMService
 from voice_service import VoiceService
+from vibe_service import VibeService
 from streamlit_mic_recorder import mic_recorder
 
 # Load Env Vars
@@ -306,11 +307,20 @@ if not os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") == "your_api_k
 
 # Initialize Backend Service
 @st.cache_resource
-def get_service():
+def get_llm_service():
     return InterviewLLMService()
 
-llm_service = get_service()
-voice_service = VoiceService()
+@st.cache_resource
+def get_voice_service():
+    return VoiceService()
+
+@st.cache_resource
+def get_vibe_service():
+    return VibeService()
+
+llm_service = get_llm_service()
+voice_service = get_voice_service()
+vibe_service = get_vibe_service()
 
 # --- Sidebar (Setup Phase) ---
 with st.sidebar:
@@ -441,10 +451,12 @@ else:
         text_fallback = st.chat_input("Or type your answer here...")
     
     candidate_answer = None
+    audio_bytes = None
     
     if text_fallback:
         candidate_answer = text_fallback
     elif audio_dict and "bytes" in audio_dict:
+        audio_bytes = audio_dict["bytes"]
         with st.spinner("Transcribing your audio..."):
             transcribed_text = voice_service.transcribe_audio_buffer(audio_dict["bytes"])
             if transcribed_text and not transcribed_text.startswith("Error"):
@@ -456,10 +468,11 @@ else:
         # Update state, then rerun so the new question appears ABOVE the input.
         st.session_state.messages.append({"role": "user", "content": candidate_answer})
 
-        with st.spinner("Evaluating your response..."):
+        with st.spinner("Evaluating your response (including vibe check)..."):
             current_q = st.session_state.questions[st.session_state.current_q_index]
             try:
-                evaluation = llm_service.evaluate_answer(current_q, candidate_answer)
+                vibe_metrics = vibe_service.analyze_vibe(candidate_answer, audio_bytes)
+                evaluation = llm_service.evaluate_answer(current_q, candidate_answer, vibe_metrics)
             except Exception as e:
                 st.error(
                     "Evaluation failed (likely API quota / rate limit). "
@@ -467,7 +480,7 @@ else:
                 )
                 evaluation = f"Score: N/A\nFeedback: Evaluation failed. Details: {e}"
             st.session_state.evaluations.append(
-                {"question": current_q, "answer": candidate_answer, "evaluation": evaluation}
+                {"question": current_q, "answer": candidate_answer, "evaluation": evaluation, "vibe_metrics": vibe_metrics}
             )
 
             st.session_state.current_q_index += 1
@@ -540,5 +553,8 @@ if not st.session_state.interview_active and len(st.session_state.evaluations) >
                 st.progress(min(max(score_val / 10.0, 0.0), 1.0))
             st.markdown("**Your Answer**")
             st.info(eval_data["answer"])
+            if "vibe_metrics" in eval_data and eval_data["vibe_metrics"]:
+                st.markdown("**Vibe Check Analysis**")
+                st.info(eval_data["vibe_metrics"])
             st.markdown("**Feedback & Score**")
             st.markdown(eval_data["evaluation"])

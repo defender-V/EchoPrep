@@ -41,7 +41,7 @@ QUESTION_GENERATION_PROMPT = PromptTemplate(
 
 # Prompt for evaluating an answer
 EVALUATION_PROMPT = PromptTemplate(
-    input_variables=["question", "answer"],
+    input_variables=["question", "answer", "vibe_metrics"],
     template="""
     You are an expert interviewer evaluating a candidate's response.
     
@@ -51,7 +51,11 @@ EVALUATION_PROMPT = PromptTemplate(
     Candidate's Answer:
     {answer}
 
-    Please evaluate the candidate's answer based on clarity, accuracy, and depth.
+    [System Note: Audio/Video Analysis Models have generated the following 'Vibe Check' metrics for how the candidate delivered this answer:
+    {vibe_metrics}
+    Please factor these metrics into your feedback. For instance, if stress is high, offer gentle encouragement. If confidence is low, suggest ways to sound more assertive.]
+
+    Please evaluate the candidate's answer based on clarity, accuracy, depth, and the provided vibe metrics.
     Provide your evaluation in the following format exactly:
 
     Score: [Rating out of 10]
