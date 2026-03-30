@@ -15,7 +15,10 @@ class VoiceService:
         Takes raw text (e.g., from the AI interviewer) and converts it to a playable
         audio buffer using Google Text-to-Speech (gTTS).
         """
-        tts = gTTS(text=text, lang='en', slow=False)
+        # Strip markdown asterisks and hashtags so the automated voice doesn't read them aloud
+        clean_text = text.replace('**', '').replace('*', '').replace('#', '')
+        
+        tts = gTTS(text=clean_text, lang='en', slow=False)
         audio_fp = BytesIO()
         tts.write_to_fp(audio_fp)
         audio_fp.seek(0)

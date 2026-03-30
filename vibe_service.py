@@ -55,35 +55,40 @@ class VibeService:
                 temp_wav.write(audio_bytes)
                 temp_wav_path = temp_wav.name
             
-            # Load audio (target 3 seconds at 22050 Hz)
+            # Load audio (target 3-second chunks at 22050 Hz)
             sample_rate = 22050
-            max_len = int(sample_rate * 3.0)
+            chunk_len = int(sample_rate * 3.0)
             
             y, sr = librosa.load(temp_wav_path, sr=sample_rate)
             
             # Clean up temp file
             os.unlink(temp_wav_path)
             
-            # Pad or truncate
-            if len(y) > max_len:
-                y = y[:max_len]
-            elif len(y) < max_len:
-                padding = max_len - len(y)
+            # Pad if shorter than 3 seconds
+            if len(y) < chunk_len:
+                padding = chunk_len - len(y)
                 y = np.pad(y, (0, padding), 'constant')
                 
-            # Extract Mel spectrogram
-            mel_spec = librosa.feature.melspectrogram(
-                y=y, 
-                sr=sample_rate, 
-                n_mels=128, 
-                fmax=8000
-            )
-            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+            num_chunks = max(1, len(y) // chunk_len)
+            mel_tensors = []
             
-            # Create tensor map (1, 1, 128, ~130) -> (Batch, Channel, Height, Width)
-            mel_tensor = torch.tensor(mel_spec_db, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+            for i in range(num_chunks):
+                chunk_y = y[i*chunk_len : (i+1)*chunk_len]
+                # Extract Mel spectrogram
+                mel_spec = librosa.feature.melspectrogram(
+                    y=chunk_y, 
+                    sr=sample_rate, 
+                    n_mels=128, 
+                    fmax=8000
+                )
+                mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+                
+                # Create tensor map (1, 1, 128, ~130) -> (Batch, Channel, Height, Width)
+                mel_tensor = torch.tensor(mel_spec_db, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+                mel_tensors.append(mel_tensor)
             
-            return mel_tensor
+            # Stack into a final batch
+            return torch.cat(mel_tensors, dim=0)
             
         except Exception as e:
             print(f"Error extracting features: {e}")
@@ -114,8 +119,11 @@ class VibeService:
                     outputs = self.model(features)
                     probabilities = torch.nn.functional.softmax(outputs, dim=1)
                     
-                    # Get top prediction
-                    top_p, top_class = probabilities.topk(1, dim=1)
+                    # Compute average probabilities across all 3-second chunks
+                    avg_probabilities = probabilities.mean(dim=0, keepdim=True)
+                    
+                    # Get top prediction from the holistic average
+                    top_p, top_class = avg_probabilities.topk(1, dim=1)
                     ml_prediction = self.emotion_map_reverse[top_class.item()]
                     ml_confidence = top_p.item() * 100
         
