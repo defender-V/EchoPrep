@@ -2,12 +2,10 @@ __pycache__/
 venv/
 .venv/
 myenv/
-.env
 .streamlit/
 .pytest_cache/
 *.log
-FER-2013/
-RAVDESS/
-
+.env
+*.env.*
 # ML Models & Weights
 *.pth
