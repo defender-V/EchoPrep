@@ -46,10 +46,40 @@ else
     exit 1
 fi
 
-# 7. Check if the trained model exists
-if [ ! -f "ml/models/best_ser.pth" ]; then
-    echo "⚠️  Warning: ml/models/best_ser.pth not found!"
-    echo "    The vibe check will run in degraded mode (text heuristics only) until you place the model file in that folder."
+# 7. Check if the trained model exists (or can be restored from a zip)
+MODEL_PATH="ml/models/best_ser.pth"
+MODEL_ZIP_PATH="ml/models/best_ser.zip"
+
+if [ ! -f "$MODEL_PATH" ]; then
+    echo "⚠️  Warning: $MODEL_PATH not found!"
+
+    if [ -f "$MODEL_ZIP_PATH" ]; then
+        echo "📦 Found $MODEL_ZIP_PATH. Attempting to extract model..."
+        python3 - <<'PY'
+import os
+import zipfile
+
+zip_path = "ml/models/best_ser.zip"
+target_dir = "ml/models"
+target_model = os.path.join(target_dir, "best_ser.pth")
+
+os.makedirs(target_dir, exist_ok=True)
+
+with zipfile.ZipFile(zip_path, "r") as zf:
+    zf.extractall(target_dir)
+
+if os.path.exists(target_model):
+    print(f"✅ Extracted model to {target_model}")
+else:
+    print("⚠️  Zip extracted, but best_ser.pth was not found inside it.")
+PY
+    fi
+
+    if [ ! -f "$MODEL_PATH" ]; then
+        echo "⚠️  The vibe check will run in degraded mode (text heuristics only) until you place the model file in ml/models/."
+    else
+        echo "✅ Pre-trained model (best_ser.pth) restored from zip."
+    fi
 else
     echo "✅ Pre-trained model (best_ser.pth) found."
 fi
