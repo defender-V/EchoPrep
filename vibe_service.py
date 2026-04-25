@@ -2,24 +2,15 @@ import os
 import torch
 import librosa
 import numpy as np
-from io import BytesIO
 import tempfile
-from ml.ser_model import EmotionCNN2D
+from ml.ser_model import EmotionCNNLSTM
 
 class VibeService:
     def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = None
-        self.emotion_map_reverse = {
-            0: 'Neutral',
-            1: 'Calm',
-            2: 'Happy',
-            3: 'Sad',
-            4: 'Angry',
-            5: 'Fearful',
-            6: 'Disgust',
-            7: 'Surprised'
-        }
+        self.emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad']
+        self.emotion_map_reverse = {idx: label for idx, label in enumerate(self.emotion_labels)}
         
         # Determine the absolute path to the model file
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,11 +23,24 @@ class VibeService:
         try:
             if os.path.exists(self.model_path):
                 print(f"Loading Vibe Check model from {self.model_path}...")
-                self.model = EmotionCNN2D(num_classes=8)
-                
-                # Load weights (handling potential device mismatch if trained on GPU but running on CPU)
                 checkpoint = torch.load(self.model_path, map_location=self.device)
-                self.model.load_state_dict(checkpoint['model_state_dict'])
+
+                # Allow loading either full training checkpoints or plain state_dict files.
+                state_dict = checkpoint.get('model_state_dict') if isinstance(checkpoint, dict) else checkpoint
+                arch = checkpoint.get('arch', {}) if isinstance(checkpoint, dict) else {}
+                checkpoint_labels = checkpoint.get('emotion_labels') if isinstance(checkpoint, dict) else None
+
+                if isinstance(checkpoint_labels, list) and checkpoint_labels:
+                    self.emotion_labels = checkpoint_labels
+                    self.emotion_map_reverse = {idx: label for idx, label in enumerate(self.emotion_labels)}
+
+                self.model = EmotionCNNLSTM(
+                    num_classes=arch.get('num_classes', len(self.emotion_labels)),
+                    lstm_hidden=arch.get('lstm_hidden', 256),
+                    lstm_layers=arch.get('lstm_layers', 2),
+                    lstm_dropout=arch.get('lstm_dropout', 0.3),
+                )
+                self.model.load_state_dict(state_dict)
                 self.model.to(self.device)
                 self.model.eval()
                 print("Model loaded successfully.")
@@ -47,10 +51,9 @@ class VibeService:
             self.model = None
 
     def extract_features(self, audio_bytes: bytes):
-        """Extracts Mel-spectrogram from raw audio bytes."""
+        """Extracts Mel-spectrogram from raw audio bytes using overlapping windows."""
         try:
             # We need to save the bytes to a temporary file because librosa prefers file paths
-            # or file-like objects that support seeking, which Streamlit's raw bytes sometimes struggle with.
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
                 temp_wav.write(audio_bytes)
                 temp_wav_path = temp_wav.name
@@ -58,6 +61,7 @@ class VibeService:
             # Load audio (target 3-second chunks at 22050 Hz)
             sample_rate = 22050
             chunk_len = int(sample_rate * 3.0)
+            step_len = int(sample_rate * 1.5)  # 1.5-second step (50% overlap)
             
             y, sr = librosa.load(temp_wav_path, sr=sample_rate)
             
@@ -69,23 +73,31 @@ class VibeService:
                 padding = chunk_len - len(y)
                 y = np.pad(y, (0, padding), 'constant')
                 
-            num_chunks = max(1, len(y) // chunk_len)
             mel_tensors = []
             
-            for i in range(num_chunks):
-                chunk_y = y[i*chunk_len : (i+1)*chunk_len]
-                # Extract Mel spectrogram
+            # Slide the 3-second window across the audio
+            for start in range(0, len(y) - chunk_len + 1, step_len):
+                chunk_y = y[start : start + chunk_len]
+                
+                # Extract Mel spectrogram (matching training script parameters exactly)
                 mel_spec = librosa.feature.melspectrogram(
                     y=chunk_y, 
                     sr=sample_rate, 
                     n_mels=128, 
-                    fmax=8000
+                    fmax=8000,
+                    n_fft=2048,
+                    hop_length=512
                 )
                 mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
                 
                 # Create tensor map (1, 1, 128, ~130) -> (Batch, Channel, Height, Width)
                 mel_tensor = torch.tensor(mel_spec_db, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 mel_tensors.append(mel_tensor)
+            
+            # Fallback for edge cases
+            if not mel_tensors:
+                print("Warning: Audio too short or windowing failed, returning zero tensor.")
+                return torch.zeros((1, 1, 128, 130), dtype=torch.float32)
             
             # Stack into a final batch
             return torch.cat(mel_tensors, dim=0)
@@ -124,7 +136,7 @@ class VibeService:
                     
                     # Get top prediction from the holistic average
                     top_p, top_class = avg_probabilities.topk(1, dim=1)
-                    ml_prediction = self.emotion_map_reverse[top_class.item()]
+                    ml_prediction = self.emotion_map_reverse.get(top_class.item(), 'Unknown')
                     ml_confidence = top_p.item() * 100
         
         # 3. Aggregate Metrics
@@ -132,19 +144,20 @@ class VibeService:
         base_confidence = 80 - (filler_ratio * 150)
         base_stress = 20 + (filler_ratio * 100)
         
-        if ml_prediction in ['Calm', 'Happy']:
+        # Strict matching to CREMA-D dataset labels
+        if ml_prediction in ['Neutral', 'Happy']:
             base_confidence += 15
             base_stress -= 15
-        elif ml_prediction in ['Angry', 'Fearful', 'Sad']:
+        elif ml_prediction in ['Angry', 'Fear', 'Sad']:
             base_confidence -= 20
             base_stress += 25
-        elif ml_prediction in ['Disgust', 'Surprised']:
+        elif ml_prediction in ['Disgust']:
             base_confidence -= 5
             base_stress += 10
             
         confidence = max(0, min(100, int(base_confidence)))
         stress = max(0, min(100, int(base_stress)))
-        tremor_detected = stress > 75 or ml_prediction in ['Fearful', 'Sad']
+        tremor_detected = stress > 75 or ml_prediction in ['Fear', 'Sad']
         
         metrics = [
             f"- Primary Vocal Emotion: {ml_prediction} (Model Confidence: {ml_confidence:.1f}%)",

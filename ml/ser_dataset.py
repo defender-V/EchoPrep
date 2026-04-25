@@ -5,123 +5,196 @@ from torch.utils.data import Dataset
 import librosa
 import numpy as np
 
-class RAVDESSDataset(Dataset):
-    def __init__(self, root_dir, transform=None, sample_rate=22050, max_duration=3.0):
-        """
-        Args:
-            root_dir (string): Directory with all the Actor folders.
-            transform (callable, optional): Optional transform to be applied
-                on a sample.
-            sample_rate (int): Target sample rate for audio.
-            max_duration (float): Maximum duration of audio in seconds.
-                                  Shorter audio is padded, longer is truncated.
-        """
-        self.root_dir = root_dir
-        self.transform = transform
-        self.sample_rate = sample_rate
-        self.max_len = int(sample_rate * max_duration)
-        
-        # Mapping RAVDESS emotions to our integer labels (0-indexed)
-        # 01 = neutral, 02 = calm, 03 = happy, 04 = sad, 05 = angry, 06 = fearful, 07 = disgust, 08 = surprised
-        self.emotion_map = {
-            '01': 0, # Neutral
-            '02': 1, # Calm
-            '03': 2, # Happy
-            '04': 3, # Sad
-            '05': 4, # Angry
-            '06': 5, # Fearful
-            '07': 6, # Disgust
-            '08': 7  # Surprised
-        }
-        
-        self.file_paths = []
-        self.labels = []
-        
-        print(f"Loading RAVDESS dataset from {self.root_dir}...")
-        
-        # Iterate over all Actor_* folders and .wav files
-        search_pattern = os.path.join(self.root_dir, '**', '*.wav')
-        wav_files = glob.glob(search_pattern, recursive=True)
-        
-        for file_path in wav_files:
-            filename = os.path.basename(file_path)
-            # Filename example: 03-01-05-01-01-01-01.wav
-            parts = filename.split('-')
-            
-            if len(parts) >= 7:
-                emotion_id = parts[2] # 3rd part is the emotion
-                if emotion_id in self.emotion_map:
-                    self.file_paths.append(file_path)
-                    self.labels.append(self.emotion_map[emotion_id])
-                    
-        print(f"Found {len(self.file_paths)} audio files.")
 
+class CREMADDataset(Dataset):
+    """
+    CREMA-D dataset loader that returns Mel-spectrograms suitable for
+    the CNN-LSTM model.
 
-    def __len__(self):
+    CREMA-D filename format
+    -----------------------
+        [ActorID]_[SentenceKey]_[Emotion]_[Intensity].wav
+        e.g.  1001_DFA_ANG_XX.wav
+
+    Emotions (6 classes)
+    --------------------
+        ANG = Angry    → 0
+        DIS = Disgust  → 1
+        FEA = Fear     → 2
+        HAP = Happy    → 3
+        NEU = Neutral  → 4
+        SAD = Sad      → 5
+
+    Intensities (ignored for label; available for optional filtering)
+        LO = Low | MD = Medium | HI = High | XX = Unspecified
+
+    The time axis of the spectrogram is intentionally preserved so the
+    downstream LSTM can learn temporal patterns across the utterance.
+    """
+
+    EMOTION_MAP: dict = {
+        'ANG': 0,
+        'DIS': 1,
+        'FEA': 2,
+        'HAP': 3,
+        'NEU': 4,
+        'SAD': 5,
+    }
+    EMOTION_LABELS: list = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad']
+    NUM_CLASSES: int = 6
+
+    def __init__(
+        self,
+        root_dir: str,
+        transform=None,
+        sample_rate: int = 22050,
+        max_duration: float = 3.0,
+        intensity_filter=None,
+    ):
+        """
+        Parameters
+        ----------
+        root_dir         : Folder containing the .wav files.
+                           Pass the path returned by:
+                               kagglehub.dataset_download("ejlok1/cremad")
+                           The loader searches recursively, so the top-level
+                           path or the AudioWAV sub-folder both work.
+        transform        : Optional callable applied to each spectrogram tensor.
+        sample_rate      : Target sample rate for loading audio.
+        max_duration     : Clips are padded / truncated to this length (seconds).
+        intensity_filter : Optional list of intensity codes to include,
+                           e.g. ['MD', 'HI'] to skip low-intensity recordings.
+                           Pass None (default) to keep all intensities.
+        """
+        self.root_dir         = root_dir
+        self.transform        = transform
+        self.sample_rate      = sample_rate
+        self.max_len          = int(sample_rate * max_duration)
+        self.intensity_filter = set(intensity_filter) if intensity_filter else None
+
+        self.file_paths: list = []
+        self.labels:     list = []
+
+        print(f"Loading CREMA-D dataset from: {self.root_dir}")
+        self._scan_files()
+        print(f"Found {len(self.file_paths)} valid audio files "
+              f"across {self.NUM_CLASSES} emotion classes.")
+        self._print_class_distribution()
+
+    # ---------------------------------------------------------------------- #
+    #  Internal helpers                                                        #
+    # ---------------------------------------------------------------------- #
+    def _scan_files(self) -> None:
+        wav_files = glob.glob(
+            os.path.join(self.root_dir, '**', '*.wav'), recursive=True
+        )
+
+        skipped_format    = 0
+        skipped_emotion   = 0
+        skipped_intensity = 0
+
+        for file_path in sorted(wav_files):
+            stem  = os.path.splitext(os.path.basename(file_path))[0]
+            parts = stem.split('_')
+
+            # Expected exactly 4 parts: ActorID, SentenceKey, Emotion, Intensity
+            if len(parts) != 4:
+                skipped_format += 1
+                continue
+
+            _, _, emotion_code, intensity_code = parts
+
+            if emotion_code not in self.EMOTION_MAP:
+                skipped_emotion += 1
+                continue
+
+            if self.intensity_filter and intensity_code not in self.intensity_filter:
+                skipped_intensity += 1
+                continue
+
+            self.file_paths.append(file_path)
+            self.labels.append(self.EMOTION_MAP[emotion_code])
+
+        if skipped_format:
+            print(f"  [info] Skipped {skipped_format} file(s): unexpected filename format.")
+        if skipped_emotion:
+            print(f"  [info] Skipped {skipped_emotion} file(s): unknown emotion code.")
+        if skipped_intensity:
+            print(f"  [info] Skipped {skipped_intensity} file(s): filtered by intensity.")
+
+    def _print_class_distribution(self) -> None:
+        counts = [0] * self.NUM_CLASSES
+        for lbl in self.labels:
+            counts[lbl] += 1
+        print("  Class distribution:")
+        for idx, name in enumerate(self.EMOTION_LABELS):
+            bar = '█' * (counts[idx] // 50)
+            print(f"    {name:10s} ({idx}): {counts[idx]:>5d}  {bar}")
+
+    # ---------------------------------------------------------------------- #
+    #  Dataset interface                                                       #
+    # ---------------------------------------------------------------------- #
+    def __len__(self) -> int:
         return len(self.file_paths)
 
-    def extract_mel_spectrogram(self, file_path):
-        """Loads audio and extracts Mel-spectrogram."""
+    def extract_mel_spectrogram(self, file_path: str) -> torch.Tensor:
         try:
-            # Load audio
-            y, sr = librosa.load(file_path, sr=self.sample_rate)
-            
-            # Pad or truncate to max_len
-            if len(y) > self.max_len:
-                y = y[:self.max_len]
-            elif len(y) < self.max_len:
-                padding = self.max_len - len(y)
-                # Pad equally on both sides (or just at the end)
-                y = np.pad(y, (0, padding), 'constant')
-                
-            # Extract Mel spectrogram
-            # n_mels determines the height of the image
-            # max_len // hop_length determines the width of the image
-            mel_spec = librosa.feature.melspectrogram(
-                y=y, 
-                sr=self.sample_rate, 
-                n_mels=128, 
-                fmax=8000
-            ) # Default n_fft=2048, hop_length=512
-            
-            # Convert to decibels (log scale)
-            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-            
-            # mel_spec_db shape should be (128, 130) roughly for 3 sec at 22050hz
-            # We want to return a tensor of shape (1, H, W) for a 2D CNN
-            mel_tensor = torch.tensor(mel_spec_db, dtype=torch.float32).unsqueeze(0)
-            
-            return mel_tensor
-            
-        except Exception as e:
-            print(f"Error processing {file_path}: {e}")
-            # Return a zero tensor if file is corrupt so training doesn't crash completely
-            # Assuming expected shape based on 3.0 sec, sr=22050, hop_length=512 -> max_len=66150 -> 66150/512 = ~130 frames
-            expected_width = (self.max_len // 512) + 1
-            return torch.zeros((1, 128, expected_width), dtype=torch.float32)
+            y, _ = librosa.load(file_path, sr=self.sample_rate)
 
-    def __getitem__(self, idx):
+            # --- IMPROVEMENT 1: Random Cropping for Training ---
+            if len(y) > self.max_len:
+                # Pick a random starting point instead of just truncating the end
+                max_start = len(y) - self.max_len
+                start = np.random.randint(0, max_start)
+                y = y[start : start + self.max_len]
+            else:
+                y = np.pad(y, (0, self.max_len - len(y)), mode='constant')
+
+            # --- IMPROVEMENT 2: Add Data Augmentation (Noise) ---
+            # Randomly add slight background noise 50% of the time to simulate real mics
+            if np.random.rand() < 0.5:
+                noise_amp = 0.005 * np.random.uniform() * np.amax(y)
+                y = y + noise_amp * np.random.normal(size=y.shape[0])
+
+            # Mel-spectrogram
+            mel = librosa.feature.melspectrogram(
+                y=y, sr=self.sample_rate, n_mels=128, fmax=8000, n_fft=2048, hop_length=512
+            )
+            mel_db = librosa.power_to_db(mel, ref=np.max)
+
+            return torch.tensor(mel_db, dtype=torch.float32).unsqueeze(0)
+
+        except Exception as exc:
+            print(f"[WARN] Error processing {file_path}: {exc}")
+            expected_T = (self.max_len // 512) + 1
+            return torch.zeros((1, 128, expected_T), dtype=torch.float32)
+
+    def __getitem__(self, idx: int):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        file_path = self.file_paths[idx]
-        label = self.labels[idx]
-        
-        feature = self.extract_mel_spectrogram(file_path)
-        
+        feature = self.extract_mel_spectrogram(self.file_paths[idx])
+
         if self.transform:
             feature = self.transform(feature)
-            
-        return feature, torch.tensor(label, dtype=torch.long)
 
-# Quick test if run directly
+        return feature, torch.tensor(self.labels[idx], dtype=torch.long)
+
+
+# -------------------------------------------------------------------------- #
+#  Quick sanity-check                                                          #
+# -------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    test_dir = r"C:\Users\navod\Desktop\RAVDESS"
-    dataset = RAVDESSDataset(root_dir=test_dir)
-    
-    if len(dataset) > 0:
-        sample_feature, sample_label = dataset[0]
-        print(f"Sample Feature Shape: {sample_feature.shape}")
-        print(f"Sample Label: {sample_label}")
+    import kagglehub
+
+    path = kagglehub.dataset_download("ejlok1/cremad")
+    print("Dataset path:", path)
+
+    ds = CREMADDataset(root_dir=path)
+
+    if len(ds) > 0:
+        feat, lbl = ds[0]
+        print(f"\nFeature shape : {feat.shape}")   # expect (1, 128, ~130)
+        print(f"Label         : {lbl.item()}  ({CREMADDataset.EMOTION_LABELS[lbl.item()]})")
     else:
-        print("No files found. Please check the dataset path.")
+        print("No files found — check the dataset path.")
